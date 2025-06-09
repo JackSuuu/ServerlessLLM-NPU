@@ -65,6 +65,14 @@ from peft import (
 )
 from peft.utils import set_peft_model_state_dict
 
+try:
+    from sllm_store.cann_utils import get_memory_functions, get_device_type
+    allocate_memory, get_memory_handles = get_memory_functions()
+    device_type = get_device_type()
+except ImportError:
+    from sllm_store._C import allocate_cuda_memory as allocate_memory, get_cuda_memory_handles as get_memory_handles
+    device_type = "cuda"
+
 logger = init_logger(__name__)
 
 
@@ -357,9 +365,9 @@ def best_effort_load(
         expanded_device_map, tensor_data_index
     )
     # logger.debug(f"calculate_device_memory {device_memory}")
-    cuda_memory_ptrs = allocate_cuda_memory(device_memory)
+    cuda_memory_ptrs = allocate_memory(device_memory)
     # cuda_memory_ptrs = { k: [v] for k,v in cuda_memory_ptrs.items()}
-    cuda_memory_handles = get_cuda_memory_handles(cuda_memory_ptrs)
+    cuda_memory_handles = get_memory_handles(cuda_memory_ptrs)
     device_uuid_map = get_device_uuid_map()
     # logger.debug(f"determine device_uuid_map {device_uuid_map}")
     tensor_device_offsets, tensor_copy_chunks = calculate_tensor_device_offsets(

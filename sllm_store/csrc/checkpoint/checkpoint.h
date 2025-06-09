@@ -36,13 +36,83 @@ std::unordered_map<std::string, torch::Tensor> RestoreTensors(
     const std::unordered_map<int, std::unordered_map<std::string, uint64_t>>&
         tensor_device_offsets);
 
-// {dev_id: ptr}
+// Memory allocation and handle functions for both CUDA and CANN
+#ifdef USE_CANN
+#include "cann_ipc.h"
+
+std::unordered_map<int, void*> AllocateCannMemory(
+    const std::unordered_map<int, size_t>& tensor_sizes) {
+  std::unordered_map<int, void*> memory_ptrs;
+  for (const auto& p : tensor_sizes) {
+    int device = p.first;
+    size_t size = p.second;
+    void* ptr = nullptr;
+    aclrtSetDevice(device);
+    aclError ret = aclrtMalloc(&ptr, size, ACL_MEM_MALLOC_HUGE_FIRST);
+    if (ret != ACL_ERROR_NONE) {
+      LOG(ERROR) << "Failed to allocate CANN memory: " << ret;
+      continue;
+    }
+    memory_ptrs[device] = ptr;
+  }
+  return memory_ptrs;
+}
+
+std::unordered_map<int, std::string> GetCannMemoryHandles(
+    const std::unordered_map<int, void*>& memory_ptrs) {
+  std::unordered_map<int, std::string> memory_handles;
+  CannIpcManager& ipc_manager = CannIpcManager::getInstance();
+  
+  for (const auto& p : memory_ptrs) {
+    int device = p.first;
+    void* ptr = p.second;
+    aclrtSetDevice(device);
+    
+    // Get memory size (you may need to track this separately)
+    // For now, assuming you have a way to get the size
+    size_t size = 0; // You'll need to track allocated sizes
+    
+    // Create IPC handle using the manager
+    std::string handle = ipc_manager.createIpcHandle(ptr, size, device);
+    if (!handle.empty()) {
+      memory_handles[device] = handle;
+    }
+  }
+  return memory_handles;
+}
+
+std::unordered_map<int, std::vector<std::string>> GetCannMemoryHandles(
+    const std::unordered_map<int, std::vector<void*>>& memory_ptrs) {
+  std::unordered_map<int, std::vector<std::string>> memory_handles;
+  CannIpcManager& ipc_manager = CannIpcManager::getInstance();
+  
+  for (const auto& p : memory_ptrs) {
+    auto device = p.first;
+    const auto& ptrs = p.second;
+    aclrtSetDevice(device);
+
+    std::vector<std::string> handles;
+    for (const auto& ptr : ptrs) {
+      // You'll need to track sizes for each pointer
+      size_t size = 0; // Track this separately
+      std::string handle = ipc_manager.createIpcHandle(ptr, size, device);
+      if (!handle.empty()) {
+        handles.push_back(handle);
+      }
+    }
+    memory_handles[device] = handles;
+  }
+  return memory_handles;
+}
+#else
+// CUDA functions
 std::unordered_map<int, void*> AllocateCudaMemory(
     const std::unordered_map<int, size_t>& tensor_sizes);
 std::unordered_map<int, std::string> GetCudaMemoryHandles(
     const std::unordered_map<int, void*>& memory_ptrs);
 std::unordered_map<int, std::vector<std::string>> GetCudaMemoryHandles(
     const std::unordered_map<int, std::vector<void*>>& memory_ptrs);
-std::unordered_map<int, std::string> GetDeviceUuidMap();
+#endif
 
+std::unordered_map<int, std::string> GetDeviceUuidMap();
 std::unordered_map<std::string, int> GetGpuUUID();

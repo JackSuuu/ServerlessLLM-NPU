@@ -27,7 +27,11 @@
 #include <filesystem>
 #include <thread>
 
+#ifdef USE_CANN
+#include "cann_error_handling.h"
+#else
 #include "error_handling.h"
+#endif
 
 CheckpointStore::CheckpointStore(const std::string& storage_path,
                                  size_t memory_pool_size, int num_thread,
@@ -36,15 +40,36 @@ CheckpointStore::CheckpointStore(const std::string& storage_path,
       memory_pool_size_(memory_pool_size),
       num_thread_(num_thread),
       chunk_size_(chunk_size) {
-  // Get number of GPUs
+  // Get number of GPUs/NPUs
+#ifdef USE_CANN
+  uint32_t device_count = 0;
+  aclrtGetDeviceCount(&device_count);
+  num_gpus_ = static_cast<int>(device_count);
+#else
   cudaGetDeviceCount(&num_gpus_);
-  LOG(INFO) << "Number of GPUs: " << num_gpus_;
+#endif
+  LOG(INFO) << "Number of GPUs/NPUs: " << num_gpus_;
 
   LOG(INFO) << "I/O threads: " << num_thread
             << ", chunk size: " << chunk_size / MB << "MB";
   LOG(INFO) << "Storage path: " << storage_path_;
 
   for (size_t i = 0; i < num_gpus_; ++i) {
+#ifdef USE_CANN
+    aclrtSetDevice(i);
+
+    // Get NPU UUID (simplified version for CANN)
+    char uuidStr[80];
+    snprintf(uuidStr, sizeof(uuidStr), "npu-%02zu", i);
+    gpu_info_map_[i].uuid_ = std::string(uuidStr);
+    LOG(INFO) << "NPU " << i << " UUID: " << gpu_info_map_[i].uuid_;
+
+    // create stream
+    aclError ret = aclrtCreateStream(&gpu_info_map_[i].stream_);
+    if (ret != ACL_ERROR_NONE) {
+      LOG(FATAL) << "aclrtCreateStream error: " << ret;
+    }
+#else
     cudaSetDevice(i);
 
     cudaDeviceProp props;
@@ -75,6 +100,7 @@ CheckpointStore::CheckpointStore(const std::string& storage_path,
     if (err != cudaSuccess) {
       LOG(FATAL) << "cudaStreamCreate error: " << cudaGetErrorString(err);
     }
+#endif
   }
 
   // Create a memory pool
@@ -317,6 +343,32 @@ MemPtrListMap CheckpointStore::GetDevicePtrsFromMemHandles(
     }
     auto& handle_list = memory_handles.at(uuid);
     for (const auto& handle : handle_list) {
+#ifdef USE_CANN
+      // For CANN, handles are string-based and simpler
+      void* ptr = nullptr;
+      aclrtSetDevice(device_id);
+      
+      // In CANN, we need to reconstruct the pointer from the handle string
+      // This is a simplified approach - in production you might need more sophisticated IPC
+      std::string handle_str;
+#ifdef USE_CANN
+      handle_str = handle.cann_ipc_handle_;
+#else
+      handle_str = handle.cuda_ipc_handle_;
+#endif
+      
+      // Convert string back to pointer (this is simplified)
+      uintptr_t ptr_value = std::stoull(handle_str, nullptr, 16);
+      ptr = reinterpret_cast<void*>(ptr_value);
+      
+      if (ptr == nullptr) {
+        LOG(ERROR) << "Failed to open CANN handle on device " << device_id;
+        exit(1);
+      }
+      
+      gpu_ptrs[device_id].push_back(ptr);
+#else
+      // Original CUDA implementation
       // Convert handle string to cuda handle
       cudaIpcMemHandle_t* cuda_handle =
           reinterpret_cast<cudaIpcMemHandle_t*>(const_cast<char*>(
@@ -333,6 +385,7 @@ MemPtrListMap CheckpointStore::GetDevicePtrsFromMemHandles(
       }
 
       gpu_ptrs[device_id].push_back(ptr);
+#endif
     }
   }
   return gpu_ptrs;

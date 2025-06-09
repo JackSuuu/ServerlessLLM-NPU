@@ -62,7 +62,12 @@ struct MemCopyChunk {
 using MemCopyChunkList = std::vector<MemCopyChunk>;
 
 struct MemCopyHandle {
-  std::string cuda_ipc_handle_;
+  // Support both CUDA and CANN memory handles
+#ifdef USE_CANN
+  std::string cann_ipc_handle_;  // CANN uses string-based handles
+#else
+  std::string cuda_ipc_handle_;  // Keep original CUDA handle for backward compatibility
+#endif
 };
 using MemCopyHandleList = std::vector<MemCopyHandle>;
 

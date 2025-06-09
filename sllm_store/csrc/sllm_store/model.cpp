@@ -32,10 +32,18 @@
 #include <vector>
 
 // Third-party library headers
+#ifdef USE_CANN
+#include "acl/acl.h"
+#else
 #include <cuda_runtime.h>
+#endif
 #include <glog/logging.h>
 
+#ifdef USE_CANN
+#include "cann_error_handling.h"
+#else
 #include "error_handling.h"
+#endif
 
 int Model::Initialize(const std::filesystem::path storage_path) {
   std::lock_guard<std::mutex> lock(mutex_);
@@ -288,11 +296,19 @@ int Model::ToGpu(
             return 1;
           }
 
+          #ifdef USE_CANN
+          aclError ret = aclrtSetDevice(device_id);
+          if (ret != ACL_ERROR_NONE) {
+            LOG(ERROR) << "Error setting device " << ret;
+            return 1;
+          }
+          #else
           cudaError_t err = cudaSetDevice(device_id);
           if (err != cudaSuccess) {
             LOG(ERROR) << "Error setting device " << cudaGetErrorString(err);
             return 1;
           }
+          #endif
 
           auto& host_buffers = pinned_mem_->get();
 
@@ -311,12 +327,26 @@ int Model::ToGpu(
               return 0;
             }
 
+            #ifdef USE_CANN
+            aclError ret = aclrtMemcpy(
+                (void*)((char*)device_ptr_list[handle_idx] + gpu_offset),
+                size,
+                (const void*)(host_buffers[chunk_id] + chunk_offset),
+                size,
+                ACL_MEMCPY_HOST_TO_DEVICE);
+            if (ret != ACL_ERROR_NONE) {
+              LOG(ERROR) << "Failed to copy memory from host to device "
+                         << device_id << " error: " << ret;
+              return 1;
+            }
+            #else
             CUDA_CHECK(
                 cudaMemcpy(
                     (void*)((char*)device_ptr_list[handle_idx] + gpu_offset),
                     (void*)(host_buffers[chunk_id] + chunk_offset), size,
                     cudaMemcpyHostToDevice),
                 "cudaMemcpy Error");
+            #endif
             loaded_size += size;
           }
 
@@ -352,6 +382,14 @@ int Model::ToGpu(
 
   // TODO: move to background thread
   for (auto& [device_id, device_ptr_list] : gpu_replica->device_ptrs_) {
+    #ifdef USE_CANN
+    aclrtSetDevice(device_id);
+    for (auto device_ptr : device_ptr_list) {
+      // In CANN, we don't need to explicitly close IPC handles like in CUDA
+      // The memory cleanup is handled differently
+      LOG(INFO) << "CANN memory cleanup for device " << device_id;
+    }
+    #else
     cudaSetDevice(device_id);
     for (auto device_ptr : device_ptr_list) {
       cudaError_t err = cudaIpcCloseMemHandle(device_ptr);
@@ -360,6 +398,7 @@ int Model::ToGpu(
                    << " error: " << cudaGetErrorString(err);
       }
     }
+    #endif
   }
 
   if (gpu_replica->state_ == MemoryState::INTERRUPTED) {
@@ -586,7 +625,7 @@ std::vector<std::tuple<int, size_t, size_t>> Model::MapDataToChunks(
 int Model::AllocatePinnedMemory(std::shared_ptr<PinnedMemoryPool> pool) {
   std::lock_guard<std::mutex> lock(mutex_);
   if (state_ == MemoryState::UNINITIALIZED) {
-    LOG(ERROR) << "Model " << model_path_ << " is not initialized";
+  LOG(ERROR) << "Model " << model_path_ << " is not initialized"
     return -1;
   }
   if (state_ != MemoryState::UNALLOCATED) {

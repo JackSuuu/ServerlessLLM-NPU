@@ -27,11 +27,20 @@
 #include <vector>
 
 // Third-party library headers
+#ifdef USE_CANN
+#include "acl/acl.h"
+#else
 #include <cuda_runtime.h>
+#endif
 
 // Own Headers
+#ifdef USE_CANN
+#include "cann_memory.h"
+// #include "cann_memory_pool.h"
+#else
 #include "cuda_memory.h"
 // #include "cuda_memory_pool.h"
+#endif
 #include "model.h"
 #include "pinned_memory.h"
 #include "pinned_memory_pool.h"
@@ -72,7 +81,11 @@ class CheckpointStore {
     // int device_id_;
     size_t total_memory_ = 0;
     size_t free_memory_ = 0;
-    cudaStream_t stream_;
+#ifdef USE_CANN
+    aclrtStream stream_;  // CANN stream
+#else
+    cudaStream_t stream_;  // CUDA stream
+#endif
   };
 
   const std::filesystem::path storage_path_;
@@ -98,9 +111,15 @@ class CheckpointStore {
   int AllocatePinnedMemory(const std::shared_ptr<Model>& model);
   std::vector<std::tuple<int, size_t, size_t>> CalculateChunks(size_t offset,
                                                                size_t size);
+#ifdef USE_CANN
+  int AllocateCannMemory(
+      const std::shared_ptr<GpuReplica>& gpu_replica,
+      std::vector<std::pair<int, uint64_t>> gpu_memory_sizes);
+#else
   int AllocateCudaMemory(
       const std::shared_ptr<GpuReplica>& gpu_replica,
       std::vector<std::pair<int, uint64_t>> gpu_memory_sizes);
+#endif
   ModelPtr GetModelByName(const std::string& model_path);
   MemPtrListMap GetDevicePtrsFromMemHandles(
       const MemCopyHandleListMap& memory_handles);

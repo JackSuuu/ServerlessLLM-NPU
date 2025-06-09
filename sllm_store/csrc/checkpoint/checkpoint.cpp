@@ -17,6 +17,9 @@
 //  ----------------------------------------------------------------------------
 #include "checkpoint.h"
 
+#ifdef USE_CANN
+#include "acl/acl.h"
+#else
 #include <ATen/cuda/CUDABlas.h>
 #include <cublas_v2.h>
 #include <cuda_runtime_api.h>
@@ -28,17 +31,23 @@
 #include <torch/script.h>  // One-stop header.
 #include <torch/torch.h>
 #include <unistd.h>
+#endif
 
+#include <ATen/ATen.h>
+#include <c10/core/ScalarType.h>
 #include <chrono>
 #include <filesystem>
 #include <fstream>
 #include <future>
+#include <iomanip>
 #include <iostream>
 #include <string>
 #include <thread>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
+#include "aligned_buffer.h"
 #include "progress_bar.h"
 #include "tensor_writer.h"
 
@@ -125,17 +134,28 @@ std::unordered_map<std::string, torch::Tensor> RestoreTensors(
         void* base_address = memory_base_address.at(device);
         uint64_t offset = reinterpret_cast<uint64_t>(base_address) + p.second;
 
+#ifdef USE_CANN
+        torch::Device tensor_device(torch::kPrivateUse1, device);  // NPU device
+#else
         torch::Device tensor_device(torch::kCUDA, device);
+#endif
         auto [sizes, strides, type_str] = meta_state_dict.at(name);
         at::ScalarType dtype = stringToScalarType(type_str);
         // std::cerr << name << " " << sizes << " " << strides << " " << dtype
         // << std::endl;
         if (p.second == 0 &&
             handled_memory.find(base_address) == handled_memory.end()) {
+#ifdef USE_CANN
+          torch::Tensor real_tensor = torch::from_blob(
+              reinterpret_cast<void*>(offset), c10::makeArrayRef(sizes),
+              c10::makeArrayRef(strides), [](void* ptr) { aclrtFree(ptr); },
+              torch::TensorOptions().device(tensor_device).dtype(dtype));
+#else
           torch::Tensor real_tensor = torch::from_blob(
               reinterpret_cast<void*>(offset), c10::makeArrayRef(sizes),
               c10::makeArrayRef(strides), [](void* ptr) { cudaFree(ptr); },
               torch::TensorOptions().device(tensor_device).dtype(dtype));
+#endif
           state_dict[name] = real_tensor;
           handled_memory.insert(base_address);
           // std::cerr << "Tensor " << name << " is restored to device " <<
@@ -157,10 +177,22 @@ std::unordered_map<std::string, torch::Tensor> RestoreTensors(
 
 std::unordered_map<std::string, int> GetGpuUUID() {
   int deviceCount = 0;
+#ifdef USE_CANN
+  uint32_t device_count = 0;
+  aclrtGetDeviceCount(&device_count);
+  deviceCount = static_cast<int>(device_count);
+#else
   cudaGetDeviceCount(&deviceCount);  // Get the number of CUDA devices
+#endif
   std::unordered_map<std::string, int> uuidToDeviceIdMap;
 
   for (int devId = 0; devId < deviceCount; ++devId) {
+#ifdef USE_CANN
+    // For CANN, generate simplified NPU UUIDs
+    char uuidStr[80];
+    snprintf(uuidStr, sizeof(uuidStr), "npu-%02d", devId);
+    uuidToDeviceIdMap[std::string(uuidStr)] = devId;
+#else
     cudaDeviceProp props;
     cudaGetDeviceProperties(&props, devId);  // Get properties for each device
 
@@ -182,11 +214,62 @@ std::unordered_map<std::string, int> GetGpuUUID() {
         (unsigned char)props.uuid.bytes[15]);
 
     uuidToDeviceIdMap[std::string(uuidStr)] = devId;
+#endif
   }
 
   return uuidToDeviceIdMap;
 }
 
+#ifdef USE_CANN
+std::unordered_map<int, void*> AllocateCannMemory(
+    const std::unordered_map<int, size_t>& tensor_sizes) {
+  std::unordered_map<int, void*> memory_ptrs;
+  for (const auto& p : tensor_sizes) {
+    int device = p.first;
+    size_t size = p.second;
+    void* ptr = nullptr;
+    aclrtSetDevice(device);
+    aclrtMalloc(&ptr, size, ACL_MEM_MALLOC_HUGE_FIRST);
+    memory_ptrs[device] = ptr;
+  }
+  return memory_ptrs;
+}
+
+std::unordered_map<int, std::string> GetCannMemoryHandles(
+    const std::unordered_map<int, void*>& memory_ptrs) {
+  std::unordered_map<int, std::string> memory_handles;
+  for (const auto& p : memory_ptrs) {
+    int device = p.first;
+    void* ptr = p.second;
+    aclrtSetDevice(device);
+    
+    // Generate handle string from pointer address
+    std::ostringstream oss;
+    oss << std::hex << reinterpret_cast<uintptr_t>(ptr);
+    memory_handles[device] = oss.str();
+  }
+  return memory_handles;
+}
+
+std::unordered_map<int, std::vector<std::string>> GetCannMemoryHandles(
+    const std::unordered_map<int, std::vector<void*>>& memory_ptrs) {
+  std::unordered_map<int, std::vector<std::string>> memory_handles;
+  for (const auto& p : memory_ptrs) {
+    auto device = p.first;
+    const auto& ptrs = p.second;
+    aclrtSetDevice(device);
+
+    std::vector<std::string> handles;
+    for (const auto& ptr : ptrs) {
+      std::ostringstream oss;
+      oss << std::hex << reinterpret_cast<uintptr_t>(ptr);
+      handles.push_back(oss.str());
+    }
+    memory_handles[device] = handles;
+  }
+  return memory_handles;
+}
+#else
 std::unordered_map<int, void*> AllocateCudaMemory(
     const std::unordered_map<int, size_t>& tensor_sizes) {
   std::unordered_map<int, void*> memory_ptrs;
@@ -235,6 +318,7 @@ std::unordered_map<int, std::vector<std::string>> GetCudaMemoryHandles(
   }
   return memory_handles;
 }
+#endif
 
 std::unordered_map<int, std::string> GetDeviceUuidMap() {
   std::unordered_map<std::string, int> gpu_uuid = GetGpuUUID();

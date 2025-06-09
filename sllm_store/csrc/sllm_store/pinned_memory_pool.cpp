@@ -17,7 +17,11 @@
 //  ----------------------------------------------------------------------------
 #include "pinned_memory_pool.h"
 
+#ifdef USE_CANN
+#include "acl/acl.h"
+#else
 #include <cuda_runtime.h>
+#endif
 #include <glog/logging.h>
 
 PinnedMemoryPool::PinnedMemoryPool(size_t total_size, size_t chunk_size)
@@ -35,11 +39,20 @@ PinnedMemoryPool::PinnedMemoryPool(size_t total_size, size_t chunk_size)
       LOG(FATAL) << "Malloc failed";
     }
 
+#ifdef USE_CANN
+    // For CANN, we use aclrtMemcpyAsync for host-device transfers
+    // Pinned memory registration is handled differently in CANN
+    aclError ret = aclrtMallocHost((void**)&buffer, chunk_size_);
+    if (ret != ACL_ERROR_NONE) {
+      LOG(FATAL) << "aclrtMallocHost failed: " << ret;
+    }
+#else
     cudaError_t err =
         cudaHostRegister(buffer, chunk_size_, cudaHostRegisterDefault);
     if (err != cudaSuccess) {
       LOG(FATAL) << "cudaHostRegister failed: " << cudaGetErrorString(err);
     }
+#endif
     pool_.insert(buffer);
     free_list_.insert(buffer);
   }
@@ -47,8 +60,12 @@ PinnedMemoryPool::PinnedMemoryPool(size_t total_size, size_t chunk_size)
 
 PinnedMemoryPool::~PinnedMemoryPool() {
   for (char* buffer : pool_) {
+#ifdef USE_CANN
+    aclrtFreeHost(buffer);
+#else
     cudaHostUnregister(buffer);
     free(buffer);
+#endif
   }
 }
 
