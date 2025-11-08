@@ -15,8 +15,21 @@ ServerlessLLM (`sllm`, pronounced "slim") is an open-source serverless framework
 
 Curious about how it works under the hood? Check out our [System Walkthrough](https://github.com/ServerlessLLM/ServerlessLLM/tree/main/blogs/serverless-llm-architecture) for a deep dive into the technical design—perfect if you're exploring your own research or building with ServerlessLLM.
 
+## Features supported on GPU/NPU
+
+| Feature                              | GPU Support | NPU Support          |
+|--------------------------------------|-------------|----------------------|
+| Storage Aware Scheduling with Docker Compose | ✅         | To Be Done        |
+| Live Migration of Inference Instances | ✅         | To Be Done           |
+| LoRA Serving                         | ✅         | To Be Done          |
+| Quantization                         | ✅         | To Be Done                  |
+| sllm                         | ✅         | To Be Done        |
+| sllm_store                           | ✅         | ✅                  |
+| vLLM Support                         | ✅         | ✅                  |
+
 ## News
 
+- **[08/25]** We're excited to share that we have added support of fast checkpoint loading for Ascend NPUs (CANN) when using with vLLM, PyTorch and HuggingFace Accelerate. Please refer to the documentation in `/docs/stable/store/ascend_npu_deployment` and `/docs/stable/store/晟腾NPU一站式部署文档` The gitee link: [https://gitee.com/openeuler/ServerlessLLM](https://gitee.com/openeuler/ServerlessLLM)
 - **[03/25]** We're excited to share that we'll be giving a ServerlessLLM tutorial at the SESAME workshop, co-located with ASPLOS/EuroSys 2025 in Rotterdam, Netherlands, on March 31. [Slides](https://docs.google.com/presentation/d/1ioGCVpsg0x3oCxX19EiE820aMiY22X5MG6jgImZ1W18/edit?usp=sharing) | [More info](https://sesame25.github.io/)
 - **[11/24]** We have added experimental support of fast checkpoint loading for AMD GPUs (ROCm) when using with vLLM, PyTorch and HuggingFace Accelerate. Please refer to the [documentation](https://serverlessllm.github.io/docs/stable/store/rocm_quickstart) for more details.
 - **[10/24]** ServerlessLLM was invited to present at a global AI tech vision forum in Singapore.
